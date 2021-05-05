@@ -28,12 +28,12 @@ bidirectional    = True
 # wd               = 5e-6
 # dropout_prob     = 0.2
 record_length    = 440    # Fares et al. (2019)
-batch_size       = 440    # Fares et al. (2019)
+batch_size       = 128    # Fares et al. (2019)
 input_size       = 128    # Fares et al. (2019)
 feat_num         = 60     # Fares et al. (2019)  
 # num_classes      = 40     # Fares et al. (2019)
 num_hidden_nodes = 128    # Fares et al. (2019) / might be different for us (128)
-num_layers       = 2      # Fares et al. (2019)
+num_layers       = 3      # Fares et al. (2019)
 # num_epochs       = 2500   # Fares et al. (2019)
 ICA_iteratoins   = 400    # Fares et al. (2019)
 
