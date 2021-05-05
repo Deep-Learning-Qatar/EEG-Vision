@@ -128,7 +128,6 @@ class BiLSTM(nn.Module):
         self.fc2 = nn.Linear(nodes_num, num_classes)
 
     def forward(self, x, x_len):
-
         # preprocessing to pass it to CNN (B x * x T)
         x2 = x.permute(0, 2, 1)
 
@@ -306,9 +305,6 @@ def train_and_val_EEG_Net(wandb, config, model, dataloaders, criterion, optimize
                 best_model_wts = copy.deepcopy(model.state_dict())
             if phase == 'val':
                 val_acc_history.append(epoch_acc)
-
-        
-        print()
 
         # Save model every epoch
         filename = 'EEGNet' + str(config['model_nr']) + 'epoch' + str(epoch+1) + '.pth'

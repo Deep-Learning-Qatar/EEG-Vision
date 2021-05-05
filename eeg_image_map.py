@@ -176,7 +176,7 @@ def make_EEG_Image_Map(config):
     else:
         model = None
 
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.wd)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=config.scheduler_factor, patience=config.patience)                
 
@@ -251,9 +251,6 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
                 best_model_wts = copy.deepcopy(model.state_dict())
             if phase == 'val':
                 val_loss_history.append(epoch_loss)
-
-        
-        print()
 
         # Save model every epoch
         filename = 'EEGImageMap' + str(config['model_nr']) + 'epoch' + str(epoch+1) + '.pth'
