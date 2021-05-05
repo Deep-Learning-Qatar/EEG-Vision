@@ -100,33 +100,43 @@ class BiLSTM(nn.Module):
     def forward(self, x): 
         # X: (B x T x *)
 
-        print('x shape:', x.shape)
+        x = x[:, None, :]
         
         # preprocessing to pass it to CNN (B x * x T)
         x2 = x.permute(0, 2, 1)                               # (B x * x T)
 
-        print('x2 shape:', x2.shape)
-
         # Through CNN
         embedded = self.embid(x2)                             # (B x * x T)
 
-        print('embedded shape:', embedded.shape)
-
         # Through BiLSTM
         x3 = embedded.permute(0, 2, 1)                        # (B x T x *)
-        print('x3 shape:', x3.shape)
-        output, (hidden, cell) = self.lstm(embedded)          # (B x T x *)
-
-        print('output shape:', output.shape)
+        output, (hidden, cell) = self.lstm(x3)          # (B x T x *)
 
         #classify and apply softmax
         features_out = self.fc(output)                        # (B x T x *)
-        print('features_out shape:', features_out.shape)
 
         # class_out = features_out.log_softmax(2)             # (B x T x *) 
 
         return features_out.permute(1, 0, 2)                  # (T X B x *)
 
+class Simple_MLP(nn.Module):
+    def __init__(self, kernels, classes=10):
+        super(Simple_MLP, self).__init__()
+        layers = []
+        
+        self.kernels = kernels
+
+        for i in range(len(size(kernels)-2)):
+          layers.append(nn.Linear(kernels[i], kernels[i+1]))
+          layers.append(nn.BatchNorm1d(kernels[i+1]))
+          layers.append(nn.ReLU())
+          layers.append(nn.Dropout(p=0.2))
+        
+        layers.append(nn.Linear(kernels[-2], kernels[-1]))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+      return self.net(x)
 
 """# Module functions """
 def make_EEG_Image_data_loaders(config):
@@ -166,7 +176,7 @@ def make_EEG_Image_Map(config):
     else:
         model = None
 
-    criterion = nn.CTCLoss()    
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.wd)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=config.scheduler_factor, patience=config.patience)                
 
@@ -181,7 +191,7 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
     val_loss_history = []
 
     best_model_wts = copy.deepcopy(model.state_dict())
-    best_acc = 0.0
+    best_loss = 1000000
     epoch_loss = None
 
     for epoch in range(num_epochs):
@@ -197,7 +207,6 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
                 model.eval()   # Set model to evaluate mode
 
             running_loss = 0.0
-            running_corrects = 0
 
             # Iterate over data.
             for inputs, labels, X_length, Y_length in dataloaders[phase]:
@@ -211,8 +220,8 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
                 # track history if only in train
                 with torch.set_grad_enabled(phase == 'train'):
                     # Run data through the model, Compare output to target
-                    outputs = model(inputs)        # (T x B x *)
-                    loss = criterion(outputs, labels, X_length, Y_length)
+                    outputs = model(inputs).squeeze()        # (T x B x *)
+                    loss = criterion(outputs, labels)
 
                     _, preds = torch.max(outputs, 1)
 
@@ -234,7 +243,7 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
                 print('Did not log')
             
             if epoch%(int(num_epochs/10)) == 1:
-                print('[{}] Loss: {:.4f} Acc: {:.4f}'.format(phase, epoch_loss))
+                print('[{}] Loss: {:.4f}'.format(phase, epoch_loss))
 
             # deep copy the model
             if phase == 'val' and epoch_loss < best_loss:
@@ -270,8 +279,8 @@ def test_EEG_Image_Map(model, test_loader, criterion):
         for inputs, labels, X_length, Y_length in test_loader:
             inputs, labels = inputs.cuda(), labels.cuda()
             
-            outputs = model(inputs)
-            loss = criterion(outputs, labels, X_length, Y_length)
+            outputs = model(inputs).squeeze()
+            loss = criterion(outputs, labels)
 
             running_loss += loss.item() * inputs.size(0)
 
