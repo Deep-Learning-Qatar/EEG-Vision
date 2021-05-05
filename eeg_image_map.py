@@ -293,7 +293,7 @@ def test_EEG_Image_Map(model, test_loader, criterion):
 
         return predictions, total_loss
 
-def get_id_indx(feature, feature_list):
+def get_id_indx(feature, feature_list, true_indx):
   cos = nn.CosineSimilarity(dim=0)
 
   # set the first image feature as the best seen so far 
@@ -305,8 +305,10 @@ def get_id_indx(feature, feature_list):
     if current_cos > best_cos:
         best_indx = indx
         best_cos = current_cos
+    if indx == true_indx:
+        real_cos == current_cos
 
-  return best_indx
+  return best_indx, real_cos
 
 def calc_feature_id_acc(outputs, test_loader):
     """ Calculates image identification accuracy """
@@ -319,12 +321,15 @@ def calc_feature_id_acc(outputs, test_loader):
     
     all_labels_flat = [item for sublist in all_labels for item in sublist]
 
+    similarities = []
+
     # loop through each outputs and 
     for indx, out in enumerate(outputs):
-        out_indx = get_id_indx(out, all_labels_flat)
+        out_indx, real_cos = get_id_indx(out, all_labels_flat, indx)
         if indx == out_indx:
             correct += 1
+        similarities.append(real_cos)
 
     acc = correct / len(all_labels_flat)
     
-    return acc
+    return acc, similarities
