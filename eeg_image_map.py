@@ -120,23 +120,22 @@ class BiLSTM(nn.Module):
         return features_out.permute(1, 0, 2)                  # (T X B x *)
 
 class Simple_MLP(nn.Module):
-    def __init__(self, kernels, classes=10):
-        super(Simple_MLP, self).__init__()
-        layers = []
-        
-        self.kernels = kernels
+  def __init__(self, size_list, dropout_prob):
+    super(Model_Arc, self).__init__()
+    layers = []
 
-        for i in range(len(size(kernels)-2)):
-          layers.append(nn.Linear(kernels[i], kernels[i+1]))
-          layers.append(nn.BatchNorm1d(kernels[i+1]))
-          layers.append(nn.ReLU())
-          layers.append(nn.Dropout(p=0.2))
-        
-        layers.append(nn.Linear(kernels[-2], kernels[-1]))
-        self.net = nn.Sequential(*layers)
+    # Construct the NN
+    for i in range(len(size_list) - 2):
+      layers.append(nn.Linear(size_list[i], size_list[i+1]))
+      layers.append(nn.BatchNorm1d(num_features=size_list[i+1]))
+      layers.append(nn.ReLU())
+      layers.append(nn.Dropout(p=dropout_prob, inplace=False))
+      
+    layers.append(nn.Linear(size_list[-2], size_list[-1]))
+    self.net = nn.Sequential(*layers)
 
-    def forward(self, x):
-      return self.net(x)
+  def forward(self, x):
+    return self.net(x)
 
 """# Module functions """
 def make_EEG_Image_data_loaders(config):
@@ -170,7 +169,7 @@ def make_EEG_Image_Map(config):
 
     """# **Set up the model**"""
     if config.model == 'mlp':
-        model = None
+        model = Simple_MLP(config.mlp_layers, config.dropout_prob)
     elif config.model == 'bilstm':
         model = BiLSTM(config.embiddings_num, config.hidden_size, config.num_classes, config.num_layers, config.bidirectional, config.dropout_prob)
     else:
