@@ -20,6 +20,7 @@ import torch.nn as nn
 from torch.utils import data
 import matplotlib.pyplot as plt
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
+import copy
 
 
 """# **MyDataset Class**"""
@@ -38,21 +39,20 @@ class MyDataset(data.Dataset):
 
     def __getitem__(self, index):
         d = torch.as_tensor(self.X[index]).float()
-        l = torch.as_tensor(self.Y[index]).long()
+        l = torch.as_tensor(self.Y[index]).float()
         return d, l
     
     def collate(self, batch):
         # Seperate data and labels
-        X = [x[0] for x in batch]
-        Y = [y[1] for y in batch]
-
-        # Get lengths 
-        X_length = torch.as_tensor([len(i) for i in X]).long()
-        Y_length = torch.as_tensor([len(j) for j in Y]).long()
-
+        (xx, yy) = zip(*batch)
+        x_lens = torch.as_tensor([len(x) for x in xx]).long()
+        y_lens = torch.as_tensor([len(y) for y in yy]).long()
         # X_length and Y_length are of equal lengthes (B x T x *)
 
-        return pad_X, pad_Y, X_length, Y_length
+        xx  = torch.stack(list(xx), dim=0)
+        yy  = torch.stack(list(yy), dim=0)
+
+        return xx, yy, x_lens, y_lens
 
 class MyDataset_test(data.Dataset):
     def __init__(self, X_path):
@@ -94,26 +94,35 @@ class BiLSTM(nn.Module):
 
         # Fully connected layer
         self.fc = nn.Sequential(nn.Linear(hidden_size * 2, hidden_size),
-                                nn.Linear(hidden_size, num_classes),
                                 nn.Linear(hidden_size, num_classes))
 
 
     def forward(self, x): 
         # X: (B x T x *)
+
+        print('x shape:', x.shape)
         
         # preprocessing to pass it to CNN (B x * x T)
         x2 = x.permute(0, 2, 1)                               # (B x * x T)
 
+        print('x2 shape:', x2.shape)
+
         # Through CNN
         embedded = self.embid(x2)                             # (B x * x T)
 
+        print('embedded shape:', embedded.shape)
+
         # Through BiLSTM
         x3 = embedded.permute(0, 2, 1)                        # (B x T x *)
+        print('x3 shape:', x3.shape)
         output, (hidden, cell) = self.lstm(embedded)          # (B x T x *)
+
+        print('output shape:', output.shape)
 
         #classify and apply softmax
         features_out = self.fc(output)                        # (B x T x *)
-        
+        print('features_out shape:', features_out.shape)
+
         # class_out = features_out.log_softmax(2)             # (B x T x *) 
 
         return features_out.permute(1, 0, 2)                  # (T X B x *)
@@ -129,12 +138,12 @@ def make_EEG_Image_data_loaders(config):
 
     # Validation Data Loader
     val_dataset = MyDataset(config.val_data_path, config.val_labels_path)
-    val_loader_args = dict(shuffle=False, batch_size=config.atch_size, num_workers=4, collate_fn=val_dataset.collate)
+    val_loader_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=4, collate_fn=val_dataset.collate)
     val_loader = data.DataLoader(val_dataset, **val_loader_args)
 
     # Testing Data Loader
     test_dataset = MyDataset(config.test_data_path, config.test_labels_path)
-    test_loader_args = dict(shuffle=False, batch_size=config.atch_size, num_workers=4, collate_fn=val_dataset.collate)
+    test_loader_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=4, collate_fn=val_dataset.collate)
     test_loader = data.DataLoader(test_dataset, **test_loader_args)
 
     dataloaders_dict = dict(
@@ -158,7 +167,7 @@ def make_EEG_Image_Map(config):
         model = None
 
     criterion = nn.CTCLoss()    
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=config.wd)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.wd)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=config.scheduler_factor, patience=config.patience)                
 
     model.cuda()
@@ -176,8 +185,9 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
     epoch_loss = None
 
     for epoch in range(num_epochs):
-        print('Epoch {}/{}'.format(epoch+1, num_epochs))
-        print('-' * 10)
+        if epoch%(int(num_epochs/10)) == 1:
+            print('Epoch {}/{}'.format(epoch+1, num_epochs))
+            print('-' * 10)
 
         # Each epoch has a training and validation phase
         for phase in ['train', 'val']:

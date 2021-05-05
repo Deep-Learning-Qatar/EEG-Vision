@@ -128,6 +128,23 @@ class ImageDataset(data.Dataset):
         label = self.EEG_data[image_id][0]['label']
         return image, label
 
+class EEG_to_ImageDataset(data.Dataset):
+    def __init__(self, image_data, EEG_dataset, transform):
+        self.image_data = image_data
+        self.EEG_dataset = EEG_dataset
+        self.transform = transform
+        self.length = len(self.EEG_dataset)
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, index):
+        data_entry = self.EEG_dataset.data_list[index]
+        image_id = data_entry['image']
+        image = self.transform(self.image_data[image_id])
+        label = data_entry['label']
+        return image, label
+
 
 """# Module functions """
 def make_Image_data_loaders(config, eeg_path, image_path, input_size):
@@ -156,7 +173,6 @@ def make_Image_data_loaders(config, eeg_path, image_path, input_size):
         ]),
     }
 
-
     train_image_dataset = ImageDataset(data_by_image, eeg_datasets['train'], data_transforms['train'])
     train_image_loader_args = dict(shuffle=True, batch_size=config['batch_size'], num_workers=2) 
     train_image_loader = data.DataLoader(train_image_dataset, **train_image_loader_args)
@@ -176,6 +192,51 @@ def make_Image_data_loaders(config, eeg_path, image_path, input_size):
     )
 
     del eeg_datasets
+    del data_by_image
+
+    return dataloaders_dict
+
+def make_EEG_to_Image_data_loaders(eeg_loaders, image_path, input_size):
+    # Load image data
+    data_by_image = torch.load(image_path)
+    # Convert images back to PIL to be able to transform (crop)
+    data_by_image = {i: transforms.ToPILImage()(data_by_image[i]).convert("RGB") for i in data_by_image}
+
+    # Data augmentation and normalization for training
+    # Just normalization for validation
+    data_transforms = {
+        'train': transforms.Compose([
+            transforms.RandomResizedCrop(input_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]),
+        'val': transforms.Compose([
+            transforms.Resize(input_size),
+            transforms.CenterCrop(input_size),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]),
+    }
+
+    train_image_dataset = EEG_to_ImageDataset(data_by_image, eeg_loaders['train'].dataset, data_transforms['val'])
+    train_image_loader_args = dict(shuffle=False, batch_size=128, num_workers=2) 
+    train_image_loader = data.DataLoader(train_image_dataset, **train_image_loader_args)
+
+    val_image_dataset = EEG_to_ImageDataset(data_by_image, eeg_loaders['val'].dataset, data_transforms['val'])
+    val_image_loader_args = dict(shuffle=False, batch_size=128, num_workers=2)
+    val_image_loader = data.DataLoader(val_image_dataset, **val_image_loader_args)
+
+    test_image_dataset = EEG_to_ImageDataset(data_by_image, eeg_loaders['test'].dataset, data_transforms['val'])
+    test_image_loader_args = dict(shuffle=False, batch_size=128, num_workers=2)
+    test_image_loader = data.DataLoader(test_image_dataset, **test_image_loader_args)
+
+    dataloaders_dict = dict(
+        train_unshuffle=train_image_loader,
+        val=val_image_loader,
+        test= test_image_loader,
+    )
+
     del data_by_image
 
     return dataloaders_dict
@@ -305,32 +366,31 @@ def train_and_val_Image_Net(wandb, config, model, dataloaders, criterion, optimi
     model.load_state_dict(best_model_wts)
     return model, val_acc_history
 
-def test_Image_Net(model, test_loader, output_features=False):
+def test_Image_Net(model, test_loader):
     model.eval()
 
     # Run the model on some test examples
     with torch.no_grad():
         correct, total = 0., 0
         predictions = []
+        all_features = []
 
         for inputs, labels in test_loader:
             inputs, labels = inputs.cuda(), labels.cuda()
             
-            if output_features:
-                outputs, features = model(inputs, output_features=True)
-            else:
-                outputs = model(inputs, output_features=False)
+            outputs = model(inputs)
 
             _, predicted = torch.max(outputs.data, 1)
             
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
             predictions.append(predicted.cpu().numpy())
+            all_features.append(outputs.cpu().numpy())
             
             del inputs
             del labels
 
         acc = correct / total
-        return predictions, acc
+        return predictions, all_features, acc
 
 

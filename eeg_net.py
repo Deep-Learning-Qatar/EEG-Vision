@@ -94,7 +94,7 @@ def ica(X, iterations, tolerance=1e-5):
 
 # BiLSTM for EEG features encoding 95% accuracy
 class BiLSTM(nn.Module):
-    def __init__(self, record_length, input_size, nodes_num, feat_num, num_classes, n_layers, bidirectional, dropout, output_features=False):
+    def __init__(self, record_length, input_size, nodes_num, feat_num, num_classes, n_layers, bidirectional, dropout):
         #                  440,            128      128          60      40,         2           T           0.2
         super().__init__()
         
@@ -143,12 +143,12 @@ class BiLSTM(nn.Module):
         # Combine output of BiLSTM and extract features
         cat = torch.cat((hidden[-2, :, :], hidden[-1, :, :]), dim=1)
         features = self.fc1(cat)
-        features_out =  self.dropout(self.relu(features))
+        features_out =  self.relu(features)
 
         #classify 
-        class_out = self.dropout(self.fc2(features))
+        class_out = self.fc2(features)
         
-        return features_out, class_out
+        return class_out, features_out
 
 """# **Data pre-processsing and Data-set**"""
 
@@ -192,6 +192,9 @@ def make_EEG_data_loaders(config, eeg_path):
     train_dataset = EEGDataSet(eeg_datasets['train'])
     train_loader_args = dict(shuffle=True, batch_size=batch_size, num_workers=2)
     train_loader = data.DataLoader(train_dataset, **train_loader_args)
+    
+    train_loader_unshuffle_args = dict(shuffle=False, batch_size=batch_size, num_workers=2)
+    train_loader_unshuffle = data.DataLoader(train_dataset, **train_loader_unshuffle_args)
 
     # Validation
     val_dataset = EEGDataSet(eeg_datasets['val'])
@@ -205,6 +208,7 @@ def make_EEG_data_loaders(config, eeg_path):
 
     dataloaders_dict = dict(
         train=train_loader,
+        train_unshuffle=train_loader_unshuffle,
         val=val_loader,
         test=test_loader,
     )
@@ -242,8 +246,9 @@ def train_and_val_EEG_Net(wandb, config, model, dataloaders, criterion, optimize
     epoch_loss = None
 
     for epoch in range(num_epochs):
-        print('Epoch {}/{}'.format(epoch+1, num_epochs))
-        print('-' * 10)
+        if num_epochs < 10 or epoch%(int(num_epochs/10)) == 1:
+            print('Epoch {}/{}'.format(epoch+1, num_epochs))
+            print('-' * 10)
 
         # Each epoch has a training and validation phase
         for phase in ['train', 'val']:
@@ -268,7 +273,7 @@ def train_and_val_EEG_Net(wandb, config, model, dataloaders, criterion, optimize
                 # track history if only in train
                 with torch.set_grad_enabled(phase == 'train'):
                     # Get model outputs and calculate loss
-                    features, outputs = model(inputs, x_len)
+                    outputs, features = model(inputs, x_len)
                     loss = criterion(outputs, labels)
 
                     _, preds = torch.max(outputs, 1)
@@ -292,7 +297,7 @@ def train_and_val_EEG_Net(wandb, config, model, dataloaders, criterion, optimize
             else:
                 print('Did not log')
             
-            if epoch%(int(num_epochs/10)) == 1:
+            if num_epochs < 10 or epoch%(int(num_epochs/10)) == 1:
                 print('[{}] Loss: {:.4f} Acc: {:.4f}'.format(phase, epoch_loss, epoch_acc))
 
             # deep copy the model
@@ -319,33 +324,32 @@ def train_and_val_EEG_Net(wandb, config, model, dataloaders, criterion, optimize
     model.load_state_dict(best_model_wts)
     return model, val_acc_history
 
-def test_EEG_Net(model, test_loader, output_features=False):
+def test_EEG_Net(model, test_loader):
     model.eval()
-    features = None
 
     # Run the model on some test examples
     with torch.no_grad():
         correct, total = 0., 0
         predictions = []
+        all_features = []
 
         for inputs, labels in test_loader:
             inputs, labels = inputs.cuda(), labels.cuda()
+            x_len = [batch_size]*len(inputs)
             
-            if output_features:
-                outputs, features = model(inputs, output_features=True)
-            else:
-                outputs = model(inputs, output_features=False)
+            outputs, features = model(inputs, x_len)
 
             _, predicted = torch.max(outputs.data, 1)
             
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
             predictions.append(predicted.cpu().numpy())
+            all_features.append(features.cpu().numpy())
             
             del inputs
             del labels
 
         acc = correct / total
-        return predictions, features, acc
+        return predictions, all_features, acc
 
 
