@@ -305,7 +305,7 @@ def train_and_val_Image_Net(wandb, config, model, dataloaders, criterion, optimi
     model.load_state_dict(best_model_wts)
     return model, val_acc_history
 
-def test_Image_Net(model, test_loader):
+def test_Image_Net(model, test_loader, output_features=False):
     model.eval()
 
     # Run the model on some test examples
@@ -313,10 +313,13 @@ def test_Image_Net(model, test_loader):
         correct, total = 0., 0
         predictions = []
 
-        for feats, labels in test_loader:
-            feats, labels = feats.cuda(), labels.cuda()
+        for inputs, labels in test_loader:
+            inputs, labels = inputs.cuda(), labels.cuda()
             
-            outputs = model(feats)
+            if output_features:
+                outputs, features = model(inputs, output_features=True)
+            else:
+                outputs = model(inputs, output_features=False)
 
             _, predicted = torch.max(outputs.data, 1)
             
@@ -324,7 +327,7 @@ def test_Image_Net(model, test_loader):
             correct += (predicted == labels).sum().item()
             predictions.append(predicted.cpu().numpy())
             
-            del feats
+            del inputs
             del labels
 
         acc = correct / total

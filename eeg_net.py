@@ -94,7 +94,7 @@ def ica(X, iterations, tolerance=1e-5):
 
 # BiLSTM for EEG features encoding 95% accuracy
 class BiLSTM(nn.Module):
-    def __init__(self, record_length, input_size, nodes_num, feat_num, num_classes, n_layers, bidirectional, dropout):
+    def __init__(self, record_length, input_size, nodes_num, feat_num, num_classes, n_layers, bidirectional, dropout, output_features=False):
         #                  440,            128      128          60      40,         2           T           0.2
         super().__init__()
         
@@ -152,7 +152,6 @@ class BiLSTM(nn.Module):
 
 """# **Data pre-processsing and Data-set**"""
 
-# General data set for EEG data dictionary
 class EEGDataSet(data.Dataset):
     """
     Possible labels: eeg, label (ID), image (ID), subject
@@ -320,18 +319,22 @@ def train_and_val_EEG_Net(wandb, config, model, dataloaders, criterion, optimize
     model.load_state_dict(best_model_wts)
     return model, val_acc_history
 
-def test_EEG_Net(model, test_loader):
+def test_EEG_Net(model, test_loader, output_features=False):
     model.eval()
+    features = None
 
     # Run the model on some test examples
     with torch.no_grad():
         correct, total = 0., 0
         predictions = []
 
-        for feats, labels in test_loader:
-            feats, labels = feats.cuda(), labels.cuda()
+        for inputs, labels in test_loader:
+            inputs, labels = inputs.cuda(), labels.cuda()
             
-            outputs = model(feats)
+            if output_features:
+                outputs, features = model(inputs, output_features=True)
+            else:
+                outputs = model(inputs, output_features=False)
 
             _, predicted = torch.max(outputs.data, 1)
             
@@ -339,10 +342,10 @@ def test_EEG_Net(model, test_loader):
             correct += (predicted == labels).sum().item()
             predictions.append(predicted.cpu().numpy())
             
-            del feats
+            del inputs
             del labels
 
         acc = correct / total
-        return predictions, acc
+        return predictions, features, acc
 
 
