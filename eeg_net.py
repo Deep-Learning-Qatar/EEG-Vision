@@ -28,12 +28,12 @@ bidirectional    = True
 # wd               = 5e-6
 # dropout_prob     = 0.2
 record_length    = 440    # Fares et al. (2019)
-batch_size       = 128    # Fares et al. (2019)
+# batch_size       = 128    # Fares et al. (2019)
 input_size       = 128    # Fares et al. (2019)
-feat_num         = 60     # Fares et al. (2019)  
+# feat_num         = 60     # Fares et al. (2019)  
 # num_classes      = 40     # Fares et al. (2019)
-num_hidden_nodes = 128    # Fares et al. (2019) / might be different for us (128)
-num_layers       = 3      # Fares et al. (2019)
+# num_hidden_nodes = 64    # Fares et al. (2019) / might be different for us (128)
+# num_layers       = 3      # Fares et al. (2019)
 # num_epochs       = 2500   # Fares et al. (2019)
 ICA_iteratoins   = 400    # Fares et al. (2019)
 
@@ -94,8 +94,8 @@ def ica(X, iterations, tolerance=1e-5):
 
 # BiLSTM for EEG features encoding 95% accuracy
 class BiLSTM(nn.Module):
-    def __init__(self, record_length, input_size, nodes_num, feat_num, num_classes, n_layers, bidirectional, dropout):
-        #                  440,            128      128          60      40,         2           T           0.2
+    def __init__(self, record_length, input_size, nodes_num, num_classes, n_layers, bidirectional, dropout, num_features):
+        #                  440,            128                    40          2           T           0.2
         super().__init__()
         
         # feature encoding layers
@@ -103,7 +103,7 @@ class BiLSTM(nn.Module):
         # sequence input layer
         self.embedding = torch.nn.Sequential(
             nn.Conv1d(input_size, nodes_num, 3, padding=1, bias=False),
-            nn.BatchNorm1d(input_size),
+            nn.BatchNorm1d(nodes_num),
             nn.ReLU(inplace=True))
 
         # Stacked BiLSTM netwrok
@@ -116,7 +116,7 @@ class BiLSTM(nn.Module):
                             bias=True)
         
         # Fully connected layer
-        self.fc1 = nn.Linear(nodes_num * 2, nodes_num) #x2 because we num_directions=2
+        self.fc1 = nn.Linear(nodes_num * 2, num_features) #x2 because we num_directions=2
         
         # Relu layer
         self.relu = nn.ReLU()
@@ -125,29 +125,54 @@ class BiLSTM(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # classification layer
-        self.fc2 = nn.Linear(nodes_num, num_classes)
+        self.fc2 = nn.Linear(num_features, num_classes)
 
-    def forward(self, x, x_len):
+    def forward(self, x):
         # preprocessing to pass it to CNN (B x * x T)
         x2 = x.permute(0, 2, 1)
 
         # through CNN
-        embedded = self.embedding(x2)            # (B x * x T)
+        embedded = self.embedding(x2)           # (B x * x T)
         embedded = embedded.permute(0, 2, 1)    # (B x * x T)
 
         # through BiLSTM
-        packed_embedded = pack_padded_sequence(embedded, x_len, batch_first=True) 
-        packed_output, (hidden, cell) = self.lstm(packed_embedded)
+        # packed_embedded = pack_padded_sequence(embedded, x_len, batch_first=True) 
+        out, (hidden, cell) = self.lstm(embedded)
 
         # Combine output of BiLSTM and extract features
-        cat = torch.cat((hidden[-2, :, :], hidden[-1, :, :]), dim=1)
-        features = self.fc1(cat)
+        # cat = torch.cat((hidden[-2, :, :], hidden[-1, :, :]), dim=1)
+        out = out[:, -1, :]
+        features = self.fc1(out)
         features_out =  self.relu(features)
 
         #classify 
         class_out = self.fc2(features)
         
         return class_out, features_out
+
+# common LSTM for EEG features encoding
+class common_LSTM(nn.Module):
+    def __init__(self, input_size, nodes_num, num_classes, n_layers, dropout, num_features):
+    #                     128          300          40         2
+        super().__init__()
+
+        self.lstm = nn.LSTM(input_size, nodes_num, num_layers=n_layers,
+                            batch_first=True, dropout=dropout)
+        self.linear1 = nn.Linear(nodes_num, num_features)
+        self.tanh = nn.Tanh()
+        self.linear2 = nn.Linear(num_features, num_classes)
+        
+
+    def forward(self, x):
+        # preprocessing to pass it to net (B x * x T)
+        out, hidden = self.lstm(x)
+        out = out[:, -1, :]
+        out = self.linear1(out)
+        features_out = self.tanh(out)
+        class_out = self.linear2(features_out)
+        
+        return class_out, features_out
+
 
 """# **Data pre-processsing and Data-set**"""
 
@@ -189,20 +214,20 @@ def make_EEG_data_loaders(config, eeg_path):
 
     # Training
     train_dataset = EEGDataSet(eeg_datasets['train'])
-    train_loader_args = dict(shuffle=True, batch_size=batch_size, num_workers=2)
+    train_loader_args = dict(shuffle=True, batch_size=config.batch_size, num_workers=2)
     train_loader = data.DataLoader(train_dataset, **train_loader_args)
     
-    train_loader_unshuffle_args = dict(shuffle=False, batch_size=batch_size, num_workers=2)
+    train_loader_unshuffle_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=2)
     train_loader_unshuffle = data.DataLoader(train_dataset, **train_loader_unshuffle_args)
 
     # Validation
     val_dataset = EEGDataSet(eeg_datasets['val'])
-    val_loader_args = dict(shuffle=False, batch_size=batch_size, num_workers=2)
+    val_loader_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=2)
     val_loader = data.DataLoader(val_dataset, **val_loader_args)
 
     # Testing
     test_dataset = EEGDataSet(eeg_datasets['test'])
-    test_loader_args = dict(shuffle=False, batch_size=batch_size, num_workers=2)
+    test_loader_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=2)
     test_loader = data.DataLoader(test_dataset, **test_loader_args)
 
     dataloaders_dict = dict(
@@ -222,13 +247,13 @@ def make_EEG_Net(config, eeg_path):
 
     """# **Set up the model**"""
     if config.model == 'fares':
-        model = BiLSTM(record_length, input_size, num_hidden_nodes, feat_num, config.num_classes, num_layers, bidirectional, config.dropout)
-    else:
-        model = None
+        model = BiLSTM(record_length, input_size, config.num_hidden_nodes, config.num_classes, config.num_layers, bidirectional, config.dropout, config.num_features)
+    elif config.model == 'common':
+        model = common_LSTM(input_size, config.num_hidden_nodes, config.num_classes, config.num_layers, config.dropout, config.num_features)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=5)                     
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=5, verbose=True)                   
 
     model.cuda()
 
@@ -263,7 +288,6 @@ def train_and_val_EEG_Net(wandb, config, model, dataloaders, criterion, optimize
             for inputs, labels in dataloaders[phase]:
                 inputs = inputs.cuda()
                 labels = labels.cuda()
-                x_len = [batch_size]*len(inputs)
 
                 # zero the parameter gradients
                 optimizer.zero_grad()
@@ -272,7 +296,7 @@ def train_and_val_EEG_Net(wandb, config, model, dataloaders, criterion, optimize
                 # track history if only in train
                 with torch.set_grad_enabled(phase == 'train'):
                     # Get model outputs and calculate loss
-                    outputs, features = model(inputs, x_len)
+                    outputs, features = model(inputs)
                     loss = criterion(outputs, labels)
 
                     _, preds = torch.max(outputs, 1)
@@ -331,9 +355,8 @@ def test_EEG_Net(model, test_loader):
 
         for inputs, labels in test_loader:
             inputs, labels = inputs.cuda(), labels.cuda()
-            x_len = [batch_size]*len(inputs)
             
-            outputs, features = model(inputs, x_len)
+            outputs, features = model(inputs)
 
             _, predicted = torch.max(outputs.data, 1)
             
@@ -347,5 +370,3 @@ def test_EEG_Net(model, test_loader):
 
         acc = correct / total
         return predictions, all_features, acc
-
-

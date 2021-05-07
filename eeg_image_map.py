@@ -27,9 +27,10 @@ import copy
 
 class MyDataset(data.Dataset):
 
-    def __init__(self, X_path, Y_path):
+    def __init__(self, X_path, Y_path, class_labels_path):
         self.X = np.load(X_path, allow_pickle=True)
         self.Y = np.load(Y_path, allow_pickle=True)
+        self.class_labels = np.load(class_labels_path, allow_pickle=True)
 
         # Total number of frames
         self.length = self.Y.shape[0]
@@ -40,19 +41,9 @@ class MyDataset(data.Dataset):
     def __getitem__(self, index):
         d = torch.as_tensor(self.X[index]).float()
         l = torch.as_tensor(self.Y[index]).float()
-        return d, l
+        c = torch.as_tensor(self.class_labels[index]).long()
+        return d, l, c
     
-    def collate(self, batch):
-        # Seperate data and labels
-        (xx, yy) = zip(*batch)
-        x_lens = torch.as_tensor([len(x) for x in xx]).long()
-        y_lens = torch.as_tensor([len(y) for y in yy]).long()
-        # X_length and Y_length are of equal lengthes (B x T x *)
-
-        xx  = torch.stack(list(xx), dim=0)
-        yy  = torch.stack(list(yy), dim=0)
-
-        return xx, yy, x_lens, y_lens
 
 class MyDataset_test(data.Dataset):
     def __init__(self, X_path):
@@ -121,7 +112,7 @@ class BiLSTM(nn.Module):
 
 class Simple_MLP(nn.Module):
   def __init__(self, size_list, dropout_prob):
-    super(Model_Arc, self).__init__()
+    super(Simple_MLP, self).__init__()
     layers = []
 
     # Construct the NN
@@ -141,22 +132,26 @@ class Simple_MLP(nn.Module):
 def make_EEG_Image_data_loaders(config):
 
     # Training Data Loader
-    train_dataset = MyDataset(config.train_data_path, config.train_labels_path)
-    train_loader_args = dict(shuffle=True, batch_size=config.batch_size, num_workers=4, collate_fn=train_dataset.collate) 
+    train_dataset = MyDataset(config.train_data_path, config.train_labels_path, config.train_class_labels_path)
+    train_loader_args = dict(shuffle=True, batch_size=config.batch_size, num_workers=2) 
     train_loader = data.DataLoader(train_dataset, **train_loader_args)
 
+    train_loader_unshuffle_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=2)
+    train_loader_unshuffle = data.DataLoader(train_dataset, **train_loader_unshuffle_args)
+
     # Validation Data Loader
-    val_dataset = MyDataset(config.val_data_path, config.val_labels_path)
-    val_loader_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=4, collate_fn=val_dataset.collate)
+    val_dataset = MyDataset(config.val_data_path, config.val_labels_path, config.val_class_labels_path)
+    val_loader_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=2)
     val_loader = data.DataLoader(val_dataset, **val_loader_args)
 
     # Testing Data Loader
-    test_dataset = MyDataset(config.test_data_path, config.test_labels_path)
-    test_loader_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=4, collate_fn=val_dataset.collate)
+    test_dataset = MyDataset(config.test_data_path, config.test_labels_path, config.test_class_labels_path)
+    test_loader_args = dict(shuffle=False, batch_size=config.batch_size, num_workers=2)
     test_loader = data.DataLoader(test_dataset, **test_loader_args)
 
     dataloaders_dict = dict(
         train=train_loader,
+        train_unshuffle=train_loader_unshuffle,
         val=val_loader,
         test=test_loader,
     )
@@ -175,9 +170,17 @@ def make_EEG_Image_Map(config):
     else:
         model = None
 
-    criterion = nn.MSELoss()
+    if config.criterion == 'cosine':
+        criterion = nn.CosineEmbeddingLoss()
+    elif config.criterion == 'mae':
+        criterion = nn.L1Loss()
+    else:
+        criterion = nn.MSELoss(reduction='none')
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.wd)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=config.scheduler_factor, patience=config.patience)                
+    if config.scheduler == 'steplr':
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, config.step_size, gamma=config.scheduler_factor, verbose=True)
+    else:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=config.scheduler_factor, patience=config.patience, verbose=True)                
 
     model.cuda()
 
@@ -208,7 +211,7 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
             running_loss = 0.0
 
             # Iterate over data.
-            for inputs, labels, X_length, Y_length in dataloaders[phase]:
+            for inputs, labels, _ in dataloaders[phase]:
                 inputs = inputs.cuda()
                 labels = labels.cuda()
 
@@ -220,9 +223,11 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
                 with torch.set_grad_enabled(phase == 'train'):
                     # Run data through the model, Compare output to target
                     outputs = model(inputs).squeeze()        # (T x B x *)
-                    loss = criterion(outputs, labels)
-
-                    _, preds = torch.max(outputs, 1)
+                    
+                    if config.criterion == 'cosine':
+                        loss = criterion(outputs, labels, torch.ones(len(outputs)).cuda())
+                    else:
+                        loss = criterion(outputs, labels)
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
@@ -255,7 +260,10 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
         filename = 'EEGImageMap' + str(config['model_nr']) + 'epoch' + str(epoch+1) + '.pth'
         torch.save(model.state_dict(), filename)
 
-        scheduler.step(epoch_loss)
+        if config.scheduler == 'plateau':
+            scheduler.step(epoch_loss)
+        elif config.scheduler == 'steplr':
+            scheduler.step()
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
@@ -265,70 +273,72 @@ def train_and_val_EEG_Image_Map(wandb, config, model, dataloaders, criterion, op
     model.load_state_dict(best_model_wts)
     return model, val_loss_history
 
-def test_EEG_Image_Map(model, test_loader, criterion):
+def test_EEG_Image_Map(model, test_loader):
     model.eval()
 
     # Run the model on some test examples
     with torch.no_grad():
         predictions = []
 
-        for inputs, labels, X_length, Y_length in test_loader:
-            inputs, labels = inputs.cuda(), labels.cuda()
+        for inputs, labels, _ in test_loader:
+            inputs = inputs.cuda()
             
             outputs = model(inputs).squeeze()
-            loss = criterion(outputs, labels)
 
-            running_loss += loss.item() * inputs.size(0)
-
-            outputs = outputs.permute(1, 0, 2)              # (B x T x *)
             predictions.append(outputs.cpu().numpy())
             
             del inputs
-            del labels
-            del X_length
-            del Y_length
-        
-        total_loss = running_loss / len(test_loader.dataset)
 
-        return predictions, total_loss
+        return predictions
 
 def get_id_indx(feature, feature_list, true_indx):
   cos = nn.CosineSimilarity(dim=0)
 
   # set the first image feature as the best seen so far 
   best_indx = 0
-  best_cos = cos(feature, feature_list[0])
+  best_cos = torch.mean(cos(feature, feature_list[0])).item()
+  real_cos = 0.
 
-  for indx, f in eumerate(feature_list):
-    current_cos = cos(feature, f)
+  for indx, f in enumerate(feature_list):
+    current_cos = torch.mean(cos(feature, f)).item()
     if current_cos > best_cos:
         best_indx = indx
         best_cos = current_cos
     if indx == true_indx:
-        real_cos == current_cos
+        real_cos = current_cos
 
   return best_indx, real_cos
 
-def calc_feature_id_acc(outputs, test_loader):
-    """ Calculates image identification accuracy """
-    correct = 0.
+def calc_map_metrics(outputs, test_loader):
+    """ Calculates metrics to evaluate map """
+    correct_id = 0.
+    correct_class = 0.
     all_labels = []
+    all_class_labels = []
 
-    # make list out of labels in data_loader
-    for inputs, labels, X_length, Y_length in test_loader:
-        all_labels.append(labels.cpu().numpy())
+    # make list out of labels and class_labels in data_loader
+    for inputs, labels, class_labels in test_loader:
+        all_labels.append(labels.cpu())
+        all_class_labels.append(class_labels.cpu())
     
     all_labels_flat = [item for sublist in all_labels for item in sublist]
+    all_class_labels_flat = [item for sublist in all_class_labels for item in sublist]
+
+    del all_labels
+    del all_class_labels
 
     similarities = []
 
     # loop through each outputs and 
     for indx, out in enumerate(outputs):
-        out_indx, real_cos = get_id_indx(out, all_labels_flat, indx)
+        out_indx, real_cos = get_id_indx(torch.as_tensor(out).float(), all_labels_flat, indx)
         if indx == out_indx:
-            correct += 1
+            correct_id += 1
+        if all_class_labels_flat[indx] == all_class_labels_flat[out_indx]:
+            correct_class += 1
         similarities.append(real_cos)
 
-    acc = correct / len(all_labels_flat)
+    acc_id = correct_id / len(all_labels_flat)
+    acc_class = correct_class / len(all_class_labels_flat)
     
-    return acc, similarities
+    return acc_id, acc_class, similarities

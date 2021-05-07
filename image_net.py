@@ -37,7 +37,29 @@ def set_parameter_requires_grad(model, feature_extracting):
 
 """Initialize and Reshape the Networks"""
 
-def initialize_model(model_name, num_classes, feature_extract, use_pretrained=True):
+class ImageNet(nn.Module):
+    def __init__(self, pretrained_model, num_features, num_classes, relu, model_name):
+        super(ImageNet, self).__init__()
+        self.pretrained = pretrained_model
+        self.relu = nn.ReLU()
+        self.classifier = nn.Sequential(nn.Linear(num_features, num_classes))
+
+        self.add_relu = relu
+        self.model_name = model_name
+    
+    def forward(self, x, phase):
+        if self.model_name == 'inception' and phase == 'train': out, aux_outputs = self.pretrained(x)
+        else: out = self.pretrained(x)
+
+        if self.add_relu: features_out = self.relu(out)
+        else: features_out = out
+
+        class_out = self.classifier(features_out)
+
+        return class_out, features_out
+
+
+def initialize_model(model_name, num_classes, num_features, feature_extract, use_pretrained=True, relu=True):
     # Initialize these variables which will be set in this if statement. Each of these
     #   variables is model specific.
     model_ft = None
@@ -49,7 +71,7 @@ def initialize_model(model_name, num_classes, feature_extract, use_pretrained=Tr
         model_ft = models.resnet18(pretrained=use_pretrained)
         set_parameter_requires_grad(model_ft, feature_extract)
         num_ftrs = model_ft.fc.in_features
-        model_ft.fc = nn.Linear(num_ftrs, num_classes)
+        model_ft.fc = nn.Linear(num_ftrs, num_features)
         input_size = 224
 
     elif model_name == "alexnet":
@@ -58,7 +80,7 @@ def initialize_model(model_name, num_classes, feature_extract, use_pretrained=Tr
         model_ft = models.alexnet(pretrained=use_pretrained)
         set_parameter_requires_grad(model_ft, feature_extract)
         num_ftrs = model_ft.classifier[6].in_features
-        model_ft.classifier[6] = nn.Linear(num_ftrs,num_classes)
+        model_ft.classifier[6] = nn.Linear(num_ftrs, num_features)
         input_size = 224
 
     elif model_name == "vgg":
@@ -67,7 +89,7 @@ def initialize_model(model_name, num_classes, feature_extract, use_pretrained=Tr
         model_ft = models.vgg11_bn(pretrained=use_pretrained)
         set_parameter_requires_grad(model_ft, feature_extract)
         num_ftrs = model_ft.classifier[6].in_features
-        model_ft.classifier[6] = nn.Linear(num_ftrs,num_classes)
+        model_ft.classifier[6] = nn.Linear(num_ftrs, num_features)
         input_size = 224
 
     elif model_name == "squeezenet":
@@ -75,8 +97,8 @@ def initialize_model(model_name, num_classes, feature_extract, use_pretrained=Tr
         """
         model_ft = models.squeezenet1_0(pretrained=use_pretrained)
         set_parameter_requires_grad(model_ft, feature_extract)
-        model_ft.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1,1), stride=(1,1))
-        model_ft.num_classes = num_classes
+        model_ft.classifier[1] = nn.Conv2d(512, num_features, kernel_size=(1,1), stride=(1,1))
+        model_ft.num_classes = num_features
         input_size = 224
 
     elif model_name == "densenet":
@@ -85,7 +107,7 @@ def initialize_model(model_name, num_classes, feature_extract, use_pretrained=Tr
         model_ft = models.densenet121(pretrained=use_pretrained)
         set_parameter_requires_grad(model_ft, feature_extract)
         num_ftrs = model_ft.classifier.in_features
-        model_ft.classifier = nn.Linear(num_ftrs, num_classes)
+        model_ft.classifier = nn.Linear(num_ftrs, num_features)
         input_size = 224
 
     elif model_name == "inception":
@@ -99,14 +121,18 @@ def initialize_model(model_name, num_classes, feature_extract, use_pretrained=Tr
         model_ft.AuxLogits.fc = nn.Linear(num_ftrs, num_classes)
         # Handle the primary net
         num_ftrs = model_ft.fc.in_features
-        model_ft.fc = nn.Linear(num_ftrs,num_classes)
+        model_ft.fc = nn.Linear(num_ftrs, num_features)
         input_size = 299
 
     else:
         print("Invalid model name, exiting...")
         exit()
 
-    return model_ft, input_size
+    model = ImageNet(model_ft, num_features, num_classes, relu, model_name)
+
+    print(model)
+
+    return model, input_size
 
 
 """# Data Loading"""
@@ -219,16 +245,16 @@ def make_EEG_to_Image_data_loaders(eeg_loaders, image_path, input_size):
         ]),
     }
 
-    train_image_dataset = EEG_to_ImageDataset(data_by_image, eeg_loaders['train'].dataset, data_transforms['val'])
-    train_image_loader_args = dict(shuffle=False, batch_size=128, num_workers=2) 
+    train_image_dataset = EEG_to_ImageDataset(data_by_image, eeg_loaders['train_unshuffle'].dataset, data_transforms['val'])
+    train_image_loader_args = dict(shuffle=False, batch_size=64, num_workers=2)
     train_image_loader = data.DataLoader(train_image_dataset, **train_image_loader_args)
 
     val_image_dataset = EEG_to_ImageDataset(data_by_image, eeg_loaders['val'].dataset, data_transforms['val'])
-    val_image_loader_args = dict(shuffle=False, batch_size=128, num_workers=2)
+    val_image_loader_args = dict(shuffle=False, batch_size=64, num_workers=2)
     val_image_loader = data.DataLoader(val_image_dataset, **val_image_loader_args)
 
     test_image_dataset = EEG_to_ImageDataset(data_by_image, eeg_loaders['test'].dataset, data_transforms['val'])
-    test_image_loader_args = dict(shuffle=False, batch_size=128, num_workers=2)
+    test_image_loader_args = dict(shuffle=False, batch_size=64, num_workers=2)
     test_image_loader = data.DataLoader(test_image_dataset, **test_image_loader_args)
 
     dataloaders_dict = dict(
@@ -242,7 +268,7 @@ def make_EEG_to_Image_data_loaders(eeg_loaders, image_path, input_size):
     return dataloaders_dict
 
 def make_Image_Net(config, eeg_path, image_path):
-    model, input_size = initialize_model(config['model_name'], config['num_classes'], config['feature_extract'], use_pretrained=True)
+    model, input_size = initialize_model(config['model_name'], config['num_classes'], config['num_features'], config['feature_extract'], use_pretrained=True, relu=config['relu'])
     
     dataloaders = make_Image_data_loaders(config, eeg_path, image_path, input_size)
 
@@ -312,15 +338,15 @@ def train_and_val_Image_Net(wandb, config, model, dataloaders, criterion, optimi
                     # Special case for inception because in training it has an auxiliary output. In train
                     #   mode we calculate the loss by summing the final output and the auxiliary output
                     #   but in testing we only consider the final output.
-                    if is_inception and phase == 'train':
-                        # From https://discuss.pytorch.org/t/how-to-optimize-inception-model-with-auxiliary-classifiers/7958
-                        outputs, aux_outputs = model(inputs)
-                        loss1 = criterion(outputs, labels)
-                        loss2 = criterion(aux_outputs, labels)
-                        loss = loss1 + 0.4*loss2
-                    else:
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
+                    # if is_inception and phase == 'train':
+                    #     # From https://discuss.pytorch.org/t/how-to-optimize-inception-model-with-auxiliary-classifiers/7958
+                    #     # outputs, aux_outputs = model(inputs)
+                    #     loss1 = criterion(outputs, labels)
+                    #     loss2 = criterion(aux_outputs, labels)
+                    #     loss = loss1 + 0.4*loss2
+                    # else:
+                    outputs, features = model(inputs, phase)
+                    loss = criterion(outputs, labels)
 
                     _, preds = torch.max(outputs, 1)
 
@@ -378,14 +404,15 @@ def test_Image_Net(model, test_loader):
         for inputs, labels in test_loader:
             inputs, labels = inputs.cuda(), labels.cuda()
             
-            outputs = model(inputs)
+            outputs, features = model(inputs, 'test')
 
             _, predicted = torch.max(outputs.data, 1)
             
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
             predictions.append(predicted.cpu().numpy())
-            all_features.append(outputs.cpu().numpy())
+
+            all_features.append(features.cpu().numpy())
             
             del inputs
             del labels
@@ -393,4 +420,11 @@ def test_Image_Net(model, test_loader):
         acc = correct / total
         return predictions, all_features, acc
 
+def get_class_labels(test_loader):
+    all_labels = []
+
+    for inputs, labels in test_loader:
+        all_labels.append(labels.numpy())
+
+    return all_labels
 
