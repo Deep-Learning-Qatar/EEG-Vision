@@ -9,3 +9,6 @@ A research project at Carnegie Mellon University by:
   <li>EuiSuh Jeong - esj1@cmu.edu</li>
 </ul>
 
+
+Google drive folder containing the datasets used: 
+https://drive.google.com/drive/folders/11rbCEBVtssmyh3rFFNtU4HeIcmdM3XJB?usp=sharing
